@@ -1,35 +1,71 @@
-"""OpenAI-compatible chat client with streaming + inference telemetry.
+"""OpenAI-compatible chat client with streaming + honest inference telemetry.
 
-Measures the metrics NVIDIA's harness team cares about:
-  TTFT (time to first token), ITL (inter-token latency),
-  throughput (tokens/sec) and token usage per call.
+Honest metrics only:
+  TTFT (time to first chunk), total call latency, token usage (from the
+  API's usage payload), and effective throughput
+  (completion_tokens / total call seconds).
+
+Deliberately NOT reported: per-token ITL / throughput derived from
+client-side chunk arrival times. The API delivers many tokens per chunk in
+bursts, so chunk-arrival deltas measure network batching, not model speed
+(the old code reported 1500+ tok/s on gpt-4o-mini — a measurement artifact).
+
+Reliability: transient API failures are retried with exponential backoff +
+jitter; a circuit breaker trips after repeated consecutive failures;
+non-retryable errors (e.g. bad API key) fail fast via LLMError.
 """
 
 import json
 import os
-import statistics
+import random
 import time
 from dataclasses import asdict, dataclass
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+
+# Errors worth retrying. Auth / bad-request errors are NOT here on purpose:
+# retrying them burns time and never succeeds.
+RETRYABLE_ERRORS = (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    InternalServerError,
+)
+
+
+class LLMError(RuntimeError):
+    """Raised when the model call cannot be completed (retries exhausted,
+    circuit breaker open, or non-retryable API error)."""
 
 
 @dataclass
 class CallMetrics:
-    ttft_ms: float = 0.0          # time to first token
-    itl_ms_p50: float = 0.0       # median inter-token latency
-    itl_ms_p95: float = 0.0       # p95 inter-token latency
-    total_ms: float = 0.0         # full round-trip wall time
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    throughput_tps: float = 0.0   # completion tokens / generation seconds
+    ttft_ms: float = 0.0          # time to first chunk (honest)
+    total_ms: float = 0.0         # full round-trip wall time (honest)
+    prompt_tokens: int = 0        # from API usage payload
+    completion_tokens: int = 0    # from API usage payload
+    throughput_tps: float = 0.0   # effective: completion_tokens / total seconds
 
     def to_dict(self):
         return asdict(self)
 
 
 class LLMClient:
-    def __init__(self, model: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        timeout_s: float = 120.0,
+        max_retries: int = 3,
+        retry_backoff_s: float = 1.0,
+        circuit_breaker_threshold: int = 5,
+        circuit_breaker_cooldown_s: float = 60.0,
+    ):
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError(
                 "OPENAI_API_KEY is not set. Copy .env.example to .env and fill it in."
@@ -37,19 +73,66 @@ class LLMClient:
         self.client = OpenAI(
             base_url=os.getenv("OPENAI_BASE_URL") or None,
             api_key=os.getenv("OPENAI_API_KEY"),
+            timeout=timeout_s,
         )
         self.model = model or os.getenv("MODEL", "gpt-4o-mini")
+        self.timeout_s = timeout_s
+        self.max_retries = max_retries
+        self.retry_backoff_s = retry_backoff_s
+        self.circuit_breaker_threshold = circuit_breaker_threshold
+        self.circuit_breaker_cooldown_s = circuit_breaker_cooldown_s
+        self._consec_failures = 0
+        self._circuit_open_until = 0.0
 
+    # -- public API ------------------------------------------------------
     def chat(self, messages: list[dict], tools: list[dict] | None = None):
         """Returns (assistant_text, tool_calls, CallMetrics).
 
         tool_calls: list of {"id", "name", "arguments"} (arguments already parsed).
+        Raises LLMError when the call cannot be completed.
         """
+        now = time.monotonic()
+        if now < self._circuit_open_until:
+            raise LLMError(
+                f"circuit breaker open ({self._consec_failures} consecutive "
+                f"failures); cooling down"
+            )
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                text, tool_calls, metrics = self._chat_once(messages, tools)
+            except RETRYABLE_ERRORS as e:
+                last_exc = e
+                if attempt < self.max_retries:
+                    delay = self.retry_backoff_s * (2**attempt)
+                    time.sleep(delay + random.uniform(0, 0.5))
+                    continue
+                break
+            except Exception as e:
+                # Non-retryable (400 bad request, auth, ...): retrying
+                # cannot help. Break so the tail below wraps it in
+                # LLMError and the agent degrades gracefully instead of
+                # the raw exception crashing the whole eval.
+                last_exc = e
+                break
+            else:
+                self._consec_failures = 0
+                return text, tool_calls, metrics
+        self._consec_failures += 1
+        if self._consec_failures >= self.circuit_breaker_threshold:
+            self._circuit_open_until = (
+                time.monotonic() + self.circuit_breaker_cooldown_s
+            )
+        raise LLMError(
+            f"LLM call failed after {self.max_retries + 1} attempt(s): {last_exc}"
+        )
+
+    # -- internals -------------------------------------------------------
+    def _chat_once(self, messages, tools):
         start = time.perf_counter()
         stream = self._create_stream(messages, tools)
 
         first_token_at: float | None = None
-        token_times: list[float] = []
         content_parts: list[str] = []
         tool_buf: dict[int, dict] = {}
         usage = None
@@ -63,10 +146,8 @@ class LLMClient:
             delta = chunk.choices[0].delta
             piece = delta.content or ""
             delta_tcs = delta.tool_calls or []
-            if piece or delta_tcs:  # any activity counts as token arrival
-                if first_token_at is None:
-                    first_token_at = now
-                token_times.append(now)
+            if (piece or delta_tcs) and first_token_at is None:
+                first_token_at = now
             if piece:
                 content_parts.append(piece)
             for tc in delta_tcs:
@@ -92,9 +173,7 @@ class LLMClient:
                 {"id": buf["id"], "name": buf["name"], "arguments": args}
             )
 
-        metrics = self._measure(
-            start, end, first_token_at, token_times, usage
-        )
+        metrics = self._measure(start, end, first_token_at, usage)
         return "".join(content_parts), tool_calls, metrics
 
     def _create_stream(self, messages, tools):
@@ -110,24 +189,16 @@ class LLMClient:
             return self.client.chat.completions.create(**kwargs)
 
     @staticmethod
-    def _measure(start, end, first_token_at, token_times, usage):
-        m = CallMetrics(total_ms=(end - start) * 1000)
+    def _measure(start, end, first_token_at, usage):
+        total_s = end - start
+        m = CallMetrics(total_ms=total_s * 1000)
         if first_token_at is not None:
             m.ttft_ms = (first_token_at - start) * 1000
-        if len(token_times) >= 2:
-            itls = [
-                (b - a) * 1000 for a, b in zip(token_times, token_times[1:])
-            ]
-            m.itl_ms_p50 = statistics.median(itls)
-            m.itl_ms_p95 = (
-                statistics.quantiles(itls, n=100)[94] if len(itls) >= 2 else itls[0]
-            )
-            gen_s = token_times[-1] - token_times[0]
-        else:
-            gen_s = 0.0
         if usage is not None:
             m.prompt_tokens = usage.prompt_tokens or 0
             m.completion_tokens = usage.completion_tokens or 0
-        if gen_s > 0 and m.completion_tokens:
-            m.throughput_tps = m.completion_tokens / gen_s
+        if total_s > 0 and m.completion_tokens:
+            # effective throughput: what the harness actually experienced.
+            # NOT derived from per-chunk arrival times (see module docstring).
+            m.throughput_tps = m.completion_tokens / total_s
         return m

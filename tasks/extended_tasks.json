@@ -1,0 +1,75 @@
+[
+  {
+    "files": {
+      "fib.py": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return b  # BUG: wrong variable returned\n",
+      "test_fib.py": "from fib import fib\n\n\ndef test_fib():\n    assert [fib(i) for i in range(8)] == [0, 1, 1, 2, 3, 5, 8, 13]\n"
+    },
+    "id": "fib-off-by-one",
+    "prompt": "fib.py contains an off-by-one style bug: fib(n) returns the wrong value. Read the code, fix it, then run the tests with `python -m pytest test_fib.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_fib.py -q"
+  },
+  {
+    "files": {
+      "stats.py": "def mean(xs):\n    return sum(xs) / len(xs)  # BUG: ZeroDivisionError on []\n",
+      "test_stats.py": "from stats import mean\n\n\ndef test_mean():\n    assert mean([1, 2, 3]) == 2.0\n    assert mean([]) == 0.0\n"
+    },
+    "id": "mean-empty-input",
+    "prompt": "stats.py crashes on empty input. Read the code and the test, fix mean() so it handles the empty list gracefully, then run `python -m pytest test_stats.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_stats.py -q"
+  },
+  {
+    "files": {
+      "slugify.py": "import re\n\n\ndef slugify(text):\n    raise NotImplementedError(\"implement me\")\n",
+      "test_slugify.py": "from slugify import slugify\n\n\ndef test_slugify():\n    assert slugify(\"Hello World!\") == \"hello-world\"\n    assert slugify(\"  A  B  \") == \"a-b\"\n    assert slugify(\"Python_rocks\") == \"python-rocks\"\n"
+    },
+    "id": "implement-slugify",
+    "prompt": "slugify.py has an unimplemented slugify() function. Read test_slugify.py to learn the expected behavior, implement the function, then run `python -m pytest test_slugify.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_slugify.py -q"
+  },
+  {
+    "id": "retry-backoff",
+    "files": {
+      "retry.py": "def backoff(attempt, base=1.0):\n    \"\"\"Delay in seconds before retry number `attempt`.\n    attempt counts from 0: backoff(0) == base.\n    \"\"\"\n    return base * attempt ** 2  # BUG: wrong growth curve\n",
+      "test_retry.py": "from retry import backoff\n\n\ndef test_backoff():\n    assert [backoff(i) for i in range(4)] == [1.0, 2.0, 4.0, 8.0]\n\n\ndef test_backoff_base():\n    assert backoff(2, base=0.5) == 2.0\n"
+    },
+    "prompt": "retry.py has a bug in backoff(): the delay growth curve is wrong. Read retry.py and test_retry.py, fix the formula so delays double each attempt (base * 2**attempt), then run `python -m pytest test_retry.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_retry.py -q"
+  },
+  {
+    "id": "topk-from-tests",
+    "files": {
+      "ranking.py": "def topk(items, k):\n    \"\"\"items: list of (name, score). Return the top-k names by\n    score descending. Ties keep input order; k larger than the\n    list returns everything; k == 0 returns [].\n    \"\"\"\n    raise NotImplementedError(\"implement me\")\n",
+      "test_ranking.py": "from ranking import topk\n\n\ndef test_topk_basic():\n    items = [(\"a\", 3), (\"b\", 9), (\"c\", 9), (\"d\", 1)]\n    assert topk(items, 2) == [\"b\", \"c\"]\n\n\ndef test_topk_edges():\n    items = [(\"a\", 3), (\"b\", 9), (\"c\", 9), (\"d\", 1)]\n    assert topk(items, 10) == [\"b\", \"c\", \"a\", \"d\"]\n    assert topk(items, 0) == []\n"
+    },
+    "prompt": "ranking.py has an unimplemented topk() function. Read test_ranking.py to learn the expected behavior (descending by score, stable ties, edge cases for k), implement the function, then run `python -m pytest test_ranking.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_ranking.py -q"
+  },
+  {
+    "id": "orders-total-multifile",
+    "files": {
+      "money.py": "def to_cents(price_str):\n    \"\"\"'4.50' -> 450, '4.5' -> 450, '10' -> 1000.\"\"\"\n    dollars, dot, cents = price_str.partition(\".\")\n    if not dot:\n        return int(dollars) * 100\n    # BUG: cents not zero-padded, so \"4.5\" -> 405 instead of 450\n    return int(dollars) * 100 + int(cents)\n",
+      "orders.py": "from money import to_cents\n\n\ndef total(items):\n    \"\"\"items: list of (name, price_str). Total in cents.\"\"\"\n    return sum(to_cents(price) for _, price in items)\n",
+      "test_orders.py": "from money import to_cents\nfrom orders import total\n\n\ndef test_to_cents():\n    assert to_cents(\"4.50\") == 450\n    assert to_cents(\"4.5\") == 450\n    assert to_cents(\"10\") == 1000\n\n\ndef test_total():\n    assert total([(\"a\", \"4.50\"), (\"b\", \"1.05\")]) == 555\n"
+    },
+    "prompt": "This is a multi-file task: orders.py computes order totals via money.py's to_cents(), and the totals are wrong. Read money.py, orders.py, and test_orders.py, find which file the bug is in, fix it, then run `python -m pytest test_orders.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_orders.py -q"
+  },
+  {
+    "id": "count-errors",
+    "files": {
+      "logs.py": "def count_errors(lines):\n    \"\"\"Count lines reporting an error: the whole word \"error\",\n    any case. \"error-free\" must NOT count.\n    \"\"\"\n    # BUG: substring match counts \"error-free\" lines too\n    return sum(1 for line in lines if \"error\" in line.lower())\n",
+      "test_logs.py": "from logs import count_errors\n\n\ndef test_count_errors():\n    lines = [\n        \"2024-01-01 ERROR disk full\",\n        \"2024-01-01 error-free zone ok\",\n        \"2024-01-01 error: timeout\",\n        \"all good\",\n    ]\n    assert count_errors(lines) == 2\n"
+    },
+    "prompt": "logs.py has a bug in count_errors(): it over-counts. Read logs.py and test_logs.py, fix the matching so only the whole word 'error' (any case) counts, then run `python -m pytest test_logs.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_logs.py -q"
+  },
+  {
+    "id": "cli-dispatch",
+    "files": {
+      "cli.py": "import sys\n\n\ndef greet(name):\n    return f\"hello {name}\"\n\n\ndef add(a, b):\n    return str(int(a) + int(b))\n\n\nCOMMANDS = {\"greet\": greet, \"add\": add}\n\n\ndef main(argv):\n    cmd = COMMANDS[argv[1]]\n    # BUG: passes the command name itself as the first argument\n    return cmd(*argv[1:])\n\n\nif __name__ == \"__main__\":\n    print(main(sys.argv))\n",
+      "test_cli.py": "import subprocess\nimport sys\n\n\ndef run(*args):\n    r = subprocess.run(\n        [sys.executable, \"cli.py\", *args],\n        capture_output=True, text=True, timeout=30,\n    )\n    return r.returncode, r.stdout.strip()\n\n\ndef test_greet():\n    code, out = run(\"greet\", \"bob\")\n    assert code == 0 and out == \"hello bob\"\n\n\ndef test_add():\n    code, out = run(\"add\", \"2\", \"3\")\n    assert code == 0 and out == \"5\"\n"
+    },
+    "prompt": "cli.py dispatches subcommands but passes the wrong arguments: `python cli.py greet bob` prints the wrong thing. Read cli.py and test_cli.py, fix the argument slicing in main(), then run `python -m pytest test_cli.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_cli.py -q"
+  }
+]
