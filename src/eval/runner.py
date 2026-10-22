@@ -80,6 +80,7 @@ def main() -> None:
         name=cfg["name"],
         max_iterations=cfg.get("max_iterations", 12),
         context_strategy=cfg.get("context_strategy", "full"),
+        mode=cfg.get("mode", "react"),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),
@@ -93,6 +94,7 @@ def main() -> None:
     traj_dir = root / "trajectories" / config.name
 
     print(f"config={config.name} strategy={config.context_strategy} "
+          f"mode={config.mode} "
           f"prompt={config.system_prompt} tasks={len(tasks)} "
           f"judge={args.judge}")
     with out_path.open("w") as f:

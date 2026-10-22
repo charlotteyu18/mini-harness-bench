@@ -285,6 +285,15 @@ class MockLLMClient(LLMClient):
         if self._plan is None:
             prompt = messages[1]["content"] if len(messages) > 1 else ""
             self._plan = plan_for(prompt)
+        if tools is None:
+            # Planning call (plan-then-act mode): a text-only turn that
+            # does NOT consume a scripted plan turn.
+            return self._stream_turn(
+                _turn(
+                    "Plan: 1. Read the code and the tests. 2. Make the "
+                    "smallest fix. 3. Run the tests and confirm they pass."
+                )
+            )
         turn = self._plan[min(self._turn_idx, len(self._plan) - 1)]
         self._turn_idx += 1
         return self._stream_turn(turn)

@@ -1,9 +1,12 @@
 """The agent loop: system prompt -> LLM -> tools -> observe -> repeat.
 
-Two harness knobs are exposed for experiments:
+Three harness knobs are exposed for experiments:
   max_iterations:   cap on the plan/act/observe loop
   context_strategy: "full" keeps all history;
                     "sliding_window" trims old tool outputs to bound tokens
+  mode:             "react" acts turn by turn;
+                    "plan_then_act" makes one tool-less planning call first
+                    and executes against the plan
 """
 
 import json
@@ -37,6 +40,13 @@ Do not ask questions. Keep tool use focused and minimal."""
 
 SYSTEM_PROMPTS = {"v1": SYSTEM_PROMPT_V1, "v2": SYSTEM_PROMPT_V2}
 
+# Planning prompt for plan-then-act mode: a separate, tool-less call whose
+# only job is to produce the plan that the acting loop then executes.
+PLANNING_SYSTEM_PROMPT = """You are planning a coding task in a task directory.
+Output a short numbered plan (at most 6 steps): what to read first, what to
+change, and how to verify the fix. Be specific to the task. Output ONLY the
+plan — no code, no tool calls."""
+
 # Backwards-compatible alias: SYSTEM_PROMPT == v1.
 SYSTEM_PROMPT = SYSTEM_PROMPT_V1
 
@@ -46,6 +56,7 @@ class HarnessConfig:
     name: str = "default"
     max_iterations: int = 12
     context_strategy: str = "full"  # "full" | "sliding_window"
+    mode: str = "react"  # "react" | "plan_then_act" — the strategy A/B dimension
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -79,6 +90,22 @@ class Agent:
         steps: list[dict] = []
         done = False
         stop_reason = "max_iterations"
+
+        if self.config.mode == "plan_then_act":
+            plan_step = self._make_plan(task_prompt)
+            steps.append(plan_step)
+            if plan_step.get("plan_text"):
+                messages.append(
+                    {"role": "assistant", "content": f"Plan:\n{plan_step['plan_text']}"}
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Execute your plan step by step, adapting "
+                        "if the code disagrees with it. Verify with the tests "
+                        "before replying DONE.",
+                    }
+                )
 
         for i in range(self.config.max_iterations):
             try:
@@ -157,6 +184,38 @@ class Agent:
             "done": done,
             "stop_reason": stop_reason,
             "trajectory": str(traj_path),
+        }
+
+    def _make_plan(self, task_prompt: str) -> dict:
+        """One tool-less planning call. Its metrics ride along in the
+        trajectory (flagged plan=True) so cost comparisons stay honest.
+        On LLMError, degrade to plain ReAct instead of failing the task.
+        Note: with sliding_window the plan sits at index 2 and can be
+        trimmed on long tasks — pinning it is future work."""
+        plan_messages = [
+            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+            {"role": "user", "content": task_prompt},
+        ]
+        try:
+            text, _tool_calls, metrics = self.llm.chat(plan_messages, None)
+        except LLMError as e:
+            return {
+                "step": -1,
+                "plan": True,
+                "llm_metrics": CallMetrics().to_dict(),
+                "assistant_text": "",
+                "tool_calls": [],
+                "tool_results": [],
+                "error": f"planning failed, continuing without plan: {e}",
+            }
+        return {
+            "step": -1,
+            "plan": True,
+            "plan_text": text,
+            "llm_metrics": metrics.to_dict(),
+            "assistant_text": text,
+            "tool_calls": [],
+            "tool_results": [],
         }
 
     def _apply_context_strategy(self, messages: list[dict]) -> None:

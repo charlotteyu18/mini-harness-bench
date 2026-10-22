@@ -25,8 +25,14 @@ management — and measuring what each choice costs in latency and tokens.
   (failed runs record a `stop_reason` instead of crashing the eval).
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
+- **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
+  trajectory is also scored 0–5 on a rubric (solution correctness, tool
+  efficiency, verification discipline, recovery) — pytest says *whether* it
+  worked, the judge says *how well*.
 - **Config experiments** (`configs/`): compare harness knobs head-to-head —
-  e.g. `full` history vs `sliding_window` context trimming.
+  e.g. `full` history vs `sliding_window` context trimming, and pure ReAct
+  vs plan-then-act (`configs/plan.json`: one tool-less planning call, then
+  execution against the plan; planning failures degrade back to ReAct).
 
 ## Quickstart
 
@@ -65,17 +71,43 @@ behavior.
 
 ## Example results
 
-`python -m src.eval.report --results results/all.jsonl` prints a comparison
-table like this:
+Full-suite live runs (gpt-4o-mini, prompt v1, 8 tasks including one
+multi-file task; judge = gpt-4o-mini, rubric average /5). Full-context ran
+once (2026-10-20); sliding-window ran twice (2026-10-20 and 2026-10-21):
 
-| config | tasks | pass rate | avg steps | avg TTFT (ms) | avg call latency (s) | effective throughput (tok/s) | avg tokens/task |
-|---|---|---|---|---|---|---|---|
+| config | tasks | pass rate | avg steps | avg TTFT (ms) | avg call latency (s) | effective throughput (tok/s) | avg tokens/task | judge avg |
+|---|---|---|---|---|---|---|---|---|
+| serial-full-context (run 1) | 8 | 88% | 5.5 | 935.1 | 1.28 | 29.7 | 4090 | 4.5 |
+| serial-sliding-window (run 1) | 8 | 100% | 5.2 | 921.5 | 1.19 | 29.9 | 3150 | 4.8 |
+| serial-sliding-window (run 2) | 8 | 100% | 5.9 | 892.1 | 1.27 | 27.5 | 3765 | 4.4 |
 
-Early runs (gpt-4o-mini, 3/3 pass on both configs) show a latency-vs-tokens
-tradeoff between full-history and sliding-window context — but with n=3 tasks
-the run-to-run variance is large, so treat single-run deltas as directional,
-not conclusive. Growing the task suite is on the roadmap for exactly this
-reason. Run it yourself; your mileage will vary.
+Reproduce with:
+
+```bash
+python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/serial.json --judge --out results/live-serial.jsonl
+python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/sliding.json --judge --out results/live-sliding.jsonl
+cat results/live-serial.jsonl results/live-sliding.jsonl > results/live-all.jsonl
+python -m src.eval.report --results results/live-all.jsonl
+```
+
+Reading of these runs: sliding-window passed 8/8 in both runs and used
+fewer tokens per task than full-context both times — but the margin moved
+(3150 vs 4090 tokens in run 1, 3765 vs 4090 in run 2), and per-task
+behavior swung widely. `count-errors` is the poster child: full-context
+looped to the iteration cap and failed it (12 steps, 14.8k tokens, judge
+1.5/5); sliding run 1 solved it cleanly (10 steps, judge 4.5); sliding
+run 2 thrashed to the cap (12 steps, judge 1.0) yet still passed pytest —
+pass/fail and trajectory quality are different axes, which is exactly why
+the judge scores sit next to the test results. With n=8 and this much
+run-to-run variance, treat every delta here as directional, not proven;
+repeats and a bigger suite are needed before claiming a real tradeoff.
+
+This eval also caught a real harness bug: the first sliding-window run
+crashed mid-suite with an OpenAI 400 — trimming was slicing an
+assistant(tool_calls) → tool(result) group in half and orphaning the tool
+messages. Fixed (trimming now never splits a tool group) and the API-error
+path hardened so a non-retryable error degrades to a per-task `llm_error`
+instead of killing the whole run; the table above is the post-fix rerun.
 
 ## Metrics glossary
 
@@ -92,10 +124,10 @@ reason. Run it yourself; your mileage will vary.
 
 - [x] Honest telemetry (TTFT, call latency, effective throughput — no chunk-arrival artifacts)
 - [x] Reliability: retries with backoff, timeouts, circuit breaker, graceful degradation
-- [ ] LLM-as-judge scoring with rubrics, alongside deterministic pytest grading
-- [ ] More tasks: multi-file refactors, longer horizons (8–10 total)
-- [ ] Prompt versioning: prompt v1/v2 as an A/B config dimension
-- [ ] Plan-then-act vs pure ReAct experiment
+- [x] LLM-as-judge scoring with rubrics, alongside deterministic pytest grading
+- [x] More tasks: multi-file refactors, longer horizons (8 total)
+- [x] Prompt versioning: prompt v1/v2 as an A/B config dimension
+- [x] Plan-then-act vs pure ReAct: plan-then-act implemented as a config dimension (live A/B numbers to come)
 - [ ] Token budgets per task; model tiering (cheap vs strong model routing)
 - [ ] Guardrails: tool permission boundaries, destructive-command interception
 - [ ] CI: run the eval suite on every push via GitHub Actions
