@@ -21,8 +21,10 @@ management — and measuring what each choice costs in latency and tokens.
   chunk, so those numbers measure network batching, not model speed).
 - **Reliability** (`src/harness/llm.py`, `agent.py`): retries with exponential
   backoff + jitter on transient API failures, request timeouts, a circuit
-  breaker after repeated consecutive failures, and graceful degradation
-  (failed runs record a `stop_reason` instead of crashing the eval).
+  breaker after repeated consecutive failures, graceful degradation
+  (failed runs record a `stop_reason` instead of crashing the eval), and
+  optional per-task token budgets (wrap-up warning at 80%, hard stop at
+  the cap).
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
 - **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
@@ -118,7 +120,7 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - **Tokens/task** — the real cost driver for agentic workloads: every extra
   tool round-trip multiplies prompt tokens.
 - **stop_reason** — how a run ended: `done` | `max_iterations` | `llm_error` |
-  `gave_up`.
+  `budget_exceeded` | `gave_up`.
 
 ## Roadmap
 
@@ -128,7 +130,8 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - [x] More tasks: multi-file refactors, longer horizons (8 total)
 - [x] Prompt versioning: prompt v1/v2 as an A/B config dimension
 - [x] Plan-then-act vs pure ReAct: plan-then-act implemented as a config dimension (live A/B numbers to come)
-- [ ] Token budgets per task; model tiering (cheap vs strong model routing)
+- [x] Token budgets per task (80% wrap-up warning, hard stop at the cap; `configs/budget.json`)
+- [ ] Model tiering (cheap vs strong model routing)
 - [ ] Guardrails: tool permission boundaries, destructive-command interception
 - [ ] CI: run the eval suite on every push via GitHub Actions
 - [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)

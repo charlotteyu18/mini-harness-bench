@@ -7,6 +7,9 @@ Three harness knobs are exposed for experiments:
   mode:             "react" acts turn by turn;
                     "plan_then_act" makes one tool-less planning call first
                     and executes against the plan
+  token_budget:     optional per-task cap on total (prompt + completion)
+                    tokens; the agent gets a wrap-up warning at 80% and is
+                    stopped when the budget is spent
 """
 
 import json
@@ -57,6 +60,7 @@ class HarnessConfig:
     max_iterations: int = 12
     context_strategy: str = "full"  # "full" | "sliding_window"
     mode: str = "react"  # "react" | "plan_then_act" — the strategy A/B dimension
+    token_budget: int | None = None  # per-task token cap; None = unlimited
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -90,10 +94,14 @@ class Agent:
         steps: list[dict] = []
         done = False
         stop_reason = "max_iterations"
+        spent_tokens = 0
+        budget_warned = False
 
         if self.config.mode == "plan_then_act":
             plan_step = self._make_plan(task_prompt)
             steps.append(plan_step)
+            pm = plan_step["llm_metrics"]
+            spent_tokens += pm.get("prompt_tokens", 0) + pm.get("completion_tokens", 0)
             if plan_step.get("plan_text"):
                 messages.append(
                     {"role": "assistant", "content": f"Plan:\n{plan_step['plan_text']}"}
@@ -108,6 +116,14 @@ class Agent:
                 )
 
         for i in range(self.config.max_iterations):
+            if (
+                self.config.token_budget is not None
+                and spent_tokens >= self.config.token_budget
+            ):
+                # hard stop BEFORE the next call: overshoot is bounded
+                # by the single call that crossed the line.
+                stop_reason = "budget_exceeded"
+                break
             try:
                 text, tool_calls, metrics = self.llm.chat(messages, TOOL_SCHEMAS)
             except LLMError as e:
@@ -125,6 +141,7 @@ class Agent:
                 )
                 stop_reason = "llm_error"
                 break
+            spent_tokens += metrics.prompt_tokens + metrics.completion_tokens
             step = {
                 "step": i,
                 "llm_metrics": metrics.to_dict(),
@@ -173,6 +190,22 @@ class Agent:
                     }
                 )
             steps.append(step)
+            if (
+                self.config.token_budget is not None
+                and not budget_warned
+                and spent_tokens >= 0.8 * self.config.token_budget
+            ):
+                # soft warning once, at 80%: give the model a chance to
+                # land the plane before the hard stop.
+                budget_warned = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"[harness: {spent_tokens} of "
+                        f"{self.config.token_budget} budget tokens used "
+                        f"— wrap up: finish and verify now]",
+                    }
+                )
             self._apply_context_strategy(messages)
 
         traj_path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +216,7 @@ class Agent:
             "steps": steps,
             "done": done,
             "stop_reason": stop_reason,
+            "tokens_spent": spent_tokens,
             "trajectory": str(traj_path),
         }
 
