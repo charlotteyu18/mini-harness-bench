@@ -58,12 +58,14 @@ SYSTEM_PROMPT = SYSTEM_PROMPT_V1
 class HarnessConfig:
     name: str = "default"
     max_iterations: int = 12
-    context_strategy: str = "full"  # "full" | "sliding_window"
+    context_strategy: str = "full"  # "full" | "sliding_window" | "retrieved"
     mode: str = "react"  # "react" | "plan_then_act" — the strategy A/B dimension
     token_budget: int | None = None  # per-task token cap; None = unlimited
     permissions: str = "full"  # "full" | "readonly" — guardrail mode
     cheap_model: str | None = None  # tiering: start here, escalate to `model`
     tier_escalate_after_steps: int = 6  # escalate when step index reaches this
+    retrieval_top_k: int = 3  # retrieved strategy: files injected up front
+    retrieval_max_chars: int = 4000  # per-file cap on injected content
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -101,6 +103,28 @@ class Agent:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": task_prompt},
         ]
+        # RAG-style file context: retrieve the most relevant files up
+        # front and inject them into the task message, so the agent
+        # starts with the modules it needs instead of discovering them
+        # one read_file call at a time. (Mock-visible marker: the mock
+        # client shortens its plan when this block is present, the way
+        # a real model with the context in hand skips those reads.)
+        retrieved_files: list[str] = []
+        if self.config.context_strategy == "retrieved":
+            from .retrieval import retrieve_files
+
+            retrieved = retrieve_files(
+                workdir,
+                task_prompt,
+                top_k=self.config.retrieval_top_k,
+                max_chars=self.config.retrieval_max_chars,
+            )
+            retrieved_files = [r["path"] for r in retrieved]
+            if retrieved:
+                block = "\n\n## Retrieved context\nThe following files look most relevant to the task:\n"
+                for r in retrieved:
+                    block += f"\n### {r['path']}\n```\n{r['content']}\n```\n"
+                messages[1]["content"] = task_prompt + block
         steps: list[dict] = []
         done = False
         stop_reason = "max_iterations"
@@ -109,7 +133,10 @@ class Agent:
         tool_error_seen = False
 
         if self.config.mode == "plan_then_act":
-            plan_step = self._make_plan(task_prompt)
+            # messages[1] already carries the retrieved block when the
+            # retrieved strategy is on, so the planner sees the same
+            # context the actor will.
+            plan_step = self._make_plan(messages[1]["content"])
             steps.append(plan_step)
             pm = plan_step["llm_metrics"]
             spent_tokens += pm.get("prompt_tokens", 0) + pm.get("completion_tokens", 0)
@@ -244,6 +271,7 @@ class Agent:
             "stop_reason": stop_reason,
             "tokens_spent": spent_tokens,
             "trajectory": str(traj_path),
+            "retrieved_files": retrieved_files,
         }
 
     def _make_plan(self, task_prompt: str) -> dict:
@@ -279,6 +307,8 @@ class Agent:
         }
 
     def _apply_context_strategy(self, messages: list[dict]) -> None:
+        # "full" and "retrieved" keep everything: retrieved manages
+        # context by injecting relevant files up front, not by trimming.
         if self.config.context_strategy != "sliding_window":
             return
         # keep system + original task prompt + the most recent window

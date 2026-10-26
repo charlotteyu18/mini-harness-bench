@@ -71,5 +71,24 @@
     },
     "prompt": "cli.py dispatches subcommands but passes the wrong arguments: `python cli.py greet bob` prints the wrong thing. Read cli.py and test_cli.py, fix the argument slicing in main(), then run `python -m pytest test_cli.py -q` to verify. Reply DONE when tests pass.",
     "verify": "python -m pytest test_cli.py -q"
+  },
+  {
+    "files": {
+      "catalog.py": "# Catalog: sku to unit price lookup, in cents.\nPRICES = {\"apple\": 150, \"banana\": 90, \"mug\": 1200}\n",
+      "discounts.py": "# Bulk discount rule: quantity >= 10 gets 10% off the unit price.\n\n\ndef bulk_discount(quantity, unit_price):\n    \"\"\"Return the multiplier: 0.9 for bulk orders, else 1.0.\"\"\"\n    return 0.9 if quantity >= 10 else 1.0\n",
+      "solution.py": "def checkout_total(items):\n    raise NotImplementedError\n",
+      "test_checkout.py": "from solution import checkout_total\n\n\ndef test_small_order():\n    assert checkout_total([{\"sku\": \"apple\", \"quantity\": 2}]) == 300\n\n\ndef test_bulk_order():\n    assert checkout_total([{\"sku\": \"apple\", \"quantity\": 10}]) == 1350\n\n\ndef test_mixed_order():\n    items = [{\"sku\": \"apple\", \"quantity\": 10}, {\"sku\": \"mug\", \"quantity\": 1}]\n    assert checkout_total(items) == 2550\n",
+      "shipping.py": "# Carrier and zone tables for delivery fees.\nZONE_FEES = {\"north\": 500, \"south\": 700, \"islands\": 1500}\nTRANSIT_DAYS = {\"north\": 2, \"south\": 4, \"islands\": 9}\n\n\ndef delivery_fee(zone):\n    return ZONE_FEES[zone]\n\n\ndef transit_days(zone):\n    return TRANSIT_DAYS[zone]\n",
+      "tax.py": "# Jurisdiction rates for sales tax.\nRATES = {\"CA\": 0.0725, \"NY\": 0.04, \"TX\": 0.0625}\n\n\ndef tax_amount(amount, region):\n    return round(amount * RATES[region])\n",
+      "inventory.py": "# Stock levels by warehouse.\nSTOCK = {\"apple\": 120, \"banana\": 60, \"mug\": 25}\nREORDER_AT = 10\n\n\ndef in_stock(name):\n    return STOCK.get(name, 0)\n\n\ndef needs_reorder(name):\n    return in_stock(name) <= REORDER_AT\n",
+      "users.py": "# User profiles and session handling.\nimport hashlib\n\n\ndef hash_password(password):\n    return hashlib.sha256(password.encode()).hexdigest()\n\n\ndef new_session(user_id):\n    return {\"user\": user_id, \"token\": hash_password(user_id)}\n",
+      "reports.py": "# Monthly revenue aggregation.\ndef monthly_totals(records):\n    totals = {}\n    for month, amount in records:\n        totals[month] = totals.get(month, 0) + amount\n    return totals\n",
+      "legacy.py": "# Deprecated helpers kept for backward compatibility.\ndef old_format(name):\n    return name.strip().lower().replace(\" \", \"_\")\n",
+      "utils.py": "# Date and text formatting helpers.\ndef format_date(year, month, day):\n    return f\"{year}-{month:02d}-{day:02d}\"\n\n\ndef slug(text):\n    return text.strip().lower().replace(\" \", \"-\")\n",
+      "config.py": "# Application settings.\nSETTINGS = {\"debug\": False, \"environment\": \"production\", \"retries\": 3}\n\n\ndef get_setting(key):\n    return SETTINGS[key]\n"
+    },
+    "id": "checkout-with-distractors",
+    "prompt": "Implement `checkout_total(items)` in `solution.py`: each item is a dict with `sku` and `quantity`. Look up the unit price in `catalog.py`, and apply the bulk discount rule from `discounts.py`. The workdir contains several other modules you do not need. Run `python -m pytest test_checkout.py -q` to verify. Reply DONE when tests pass.",
+    "verify": "python -m pytest test_checkout.py -q"
   }
 ]

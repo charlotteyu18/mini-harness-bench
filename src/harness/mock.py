@@ -100,6 +100,18 @@ if __name__ == "__main__":
     print(main(sys.argv))
 '''
 
+FIXED_CHECKOUT = '''from catalog import PRICES
+from discounts import bulk_discount
+
+
+def checkout_total(items):
+    total = 0
+    for item in items:
+        unit = PRICES[item["sku"]]
+        total += unit * item["quantity"] * bulk_discount(item["quantity"], unit)
+    return int(total)
+'''
+
 PYTEST = "python -m pytest"
 
 
@@ -248,13 +260,54 @@ PLANS = {
         ),
         _turn("Tests pass. DONE"),
     ],
+    "catalog.py": [
+        _turn(
+            "Several modules here; the relevant ones are catalog.py and "
+            "discounts.py. Reading both.",
+            ("read_file", {"path": "catalog.py"}),
+            ("read_file", {"path": "discounts.py"}),
+        ),
+        _turn(
+            "Prices from catalog, bulk multiplier from discounts. "
+            "Writing the implementation.",
+            ("write_file", {"path": "solution.py", "content": FIXED_CHECKOUT}),
+        ),
+        _turn(
+            "Verifying with the test suite.",
+            ("run_shell", {"command": f"{PYTEST} test_checkout.py -q", "timeout": 60}),
+        ),
+        _turn("Tests pass. DONE"),
+    ],
 }
 
+# Retrieved-context variant of the catalog plan: with catalog.py and
+# discounts.py already injected into the task message, a model with the
+# context in hand skips the discovery reads and goes straight to writing.
+CATALOG_PLAN_RETRIEVED = [
+    _turn(
+        "catalog.py and discounts.py are already in context. Writing the "
+        "implementation directly.",
+        ("write_file", {"path": "solution.py", "content": FIXED_CHECKOUT}),
+    ),
+    _turn(
+        "Verifying with the test suite.",
+        ("run_shell", {"command": f"{PYTEST} test_checkout.py -q", "timeout": 60}),
+    ),
+    _turn("Tests pass. DONE"),
+]
 
-def plan_for(prompt: str) -> list[dict]:
-    """Pick the scripted plan whose key file is mentioned in the prompt."""
+
+def plan_for(prompt: str, retrieved: bool = False) -> list[dict]:
+    """Pick the scripted plan whose key file is mentioned in the prompt.
+
+    With retrieved context present, the catalog plan drops its discovery
+    reads — the same shortcut a real model takes when the relevant files
+    are already in context.
+    """
     for key, plan in PLANS.items():
         if key in prompt:
+            if retrieved and key == "catalog.py":
+                return CATALOG_PLAN_RETRIEVED
             return plan
     # Unknown task: do one harmless read, then stop. The verify step will
     # decide pass/fail; the loop itself still exercises the full path.
@@ -284,7 +337,9 @@ class MockLLMClient(LLMClient):
     def _create_stream(self, messages, tools):
         if self._plan is None:
             prompt = messages[1]["content"] if len(messages) > 1 else ""
-            self._plan = plan_for(prompt)
+            self._plan = plan_for(
+                prompt, retrieved="## Retrieved context" in prompt
+            )
         if tools is None:
             # Planning call (plan-then-act mode): a text-only turn that
             # does NOT consume a scripted plan turn.

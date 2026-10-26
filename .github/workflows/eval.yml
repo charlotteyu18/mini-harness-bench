@@ -1,0 +1,73 @@
+# Eval gate: mock suite on every push/PR (no API key), live suite on manual dispatch.
+name: eval
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "Config to run live (configs/<name>.json)"
+        required: true
+        default: "serial"
+        type: choice
+        options: [serial, sliding, plan, budget, tiered, retrieved]
+      judge:
+        description: "Also run LLM-as-judge"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  mock-eval:
+    # Offline gate: scripted mock client, zero API cost. Fails the build
+    # if any task fails under any of the three core context strategies.
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Mock eval (serial, sliding, retrieved)
+        run: |
+          MODEL=mock python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/serial.json --out results/mock_serial.jsonl
+          MODEL=mock python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/sliding.json --out results/mock_sliding.jsonl
+          MODEL=mock python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/retrieved.json --out results/mock_retrieved.jsonl
+      - name: Fail if any task failed
+        run: |
+          python -c "
+          import json
+          for f in ['results/mock_serial.jsonl', 'results/mock_sliding.jsonl', 'results/mock_retrieved.jsonl']:
+              rows = [json.loads(l) for l in open(f)]
+              bad = [r['task_id'] for r in rows if not r['passed']]
+              assert not bad, f'{f}: failed {bad}'
+              print(f'{f}: {len(rows)}/{len(rows)} passed')
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mock-results
+          path: results/mock_*.jsonl
+
+  live-eval:
+    # Manual only: runs a real model against the suite. Requires the
+    # OPENAI_API_KEY repo secret; never runs on push or PR.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Live eval
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          JUDGE_FLAG=$([ "${{ inputs.judge }}" = "true" ] && echo "--judge")
+          python -m src.eval.runner --tasks tasks/extended_tasks.json --config configs/${{ inputs.config }}.json $JUDGE_FLAG --out results/live-${{ inputs.config }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-results
+          path: results/live-*.jsonl

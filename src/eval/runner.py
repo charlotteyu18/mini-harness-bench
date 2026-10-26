@@ -51,6 +51,7 @@ def run_task(
             "stop_reason": outcome["stop_reason"],
             "verify_output": verify_out,
             "metrics": metrics,
+            "retrieved_files": outcome.get("retrieved_files", []),
         }
         if judge:
             # LLM-as-judge sits alongside pytest: quality score vs. pass/fail.
@@ -85,6 +86,8 @@ def main() -> None:
         permissions=cfg.get("permissions", "full"),
         cheap_model=cfg.get("cheap_model"),
         tier_escalate_after_steps=cfg.get("tier_escalate_after_steps", 6),
+        retrieval_top_k=cfg.get("retrieval_top_k", 3),
+        retrieval_max_chars=cfg.get("retrieval_max_chars", 4000),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),

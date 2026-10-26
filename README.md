@@ -30,7 +30,18 @@ management — and measuring what each choice costs in latency and tokens.
   `sudo`, piping downloads into a shell, `mkfs`, raw device writes) are
   refused before execution, and a `readonly` permission mode disables
   writes and shell entirely. Refusals reach the agent as tool results and
-  are counted in telemetry as `guardrail_blocks`.
+  are counted in telemetry as `guardrail_blocks`. Note: this is a safety
+  net, not a sandbox — shell still runs as your user and can be bypassed,
+  so never describe guardrails as sandboxing.
+- **RAG-style file context** (`src/harness/retrieval.py`): with
+  `context_strategy: "retrieved"`, the harness scores workdir files by
+  keyword overlap with the task prompt and injects the top-k into the
+  task message up front — the agent starts with the modules it needs
+  instead of discovering them one `read_file` at a time. Test files are
+  excluded from retrieval. Honest accounting: this trades per-turn read
+  calls for upfront prompt tokens, so the win is fewer tool round-trips
+  and less wandering through irrelevant files, not necessarily fewer
+  total tokens.
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
 - **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
@@ -41,9 +52,13 @@ management — and measuring what each choice costs in latency and tokens.
   e.g. `full` history vs `sliding_window` context trimming, pure ReAct
   vs plan-then-act (`configs/plan.json`: one tool-less planning call, then
   execution against the plan; planning failures degrade back to ReAct),
-  and cheap→strong model tiering (`configs/tiered.json`: start on the cheap
+  cheap→strong model tiering (`configs/tiered.json`: start on the cheap
   model, escalate on tool errors or long horizons; per-call model recorded
-  in trajectory metrics).
+  in trajectory metrics), and retrieved file context (`configs/retrieved.json`:
+  top-2 files injected up front; the suite's 9th task,
+  `checkout-with-distractors`, hides the two relevant modules among eight
+  irrelevant ones to show it off — mock: 4 steps / 4 tool calls full vs
+  3 steps / 2 tool calls retrieved; live numbers to come).
 
 ## Architecture
 
@@ -58,6 +73,7 @@ flowchart TD
     API["OpenAI-compatible API"]
     T["harness/tools.py\nread / write / shell / grep\npath jail + shell denylist"]
     WD["task workdir\nsandboxed files"]
+    RET["harness/retrieval.py\nkeyword top-k over workdir files"]
     TR["trajectories/*.jsonl\none step per line"]
     J["harness/judge.py\n0-5 rubric scoring"]
     V["verify\npytest in the workdir"]
@@ -73,6 +89,8 @@ flowchart TD
     L --> API
     A --> T
     T --> WD
+    WD --> RET
+    RET --> A
     A --> TR
     R --> V
     V --> WD
@@ -87,8 +105,18 @@ One loop iteration: build messages → LLM call (records TTFT, latency,
 tokens) → append the assistant message → execute tool calls
 (guardrail-checked) → append tool results → apply the context strategy
 (`full` keeps everything, `sliding_window` trims old messages without
-splitting a tool-call group) → repeat until DONE, the token budget, or the
+splitting a tool-call group, `retrieved` injects top-k files up front and
+then keeps full history) → repeat until DONE, the token budget, or the
 iteration cap.
+
+## CI
+
+`.github/workflows/eval.yml`: every push and PR runs the mock suite under
+the serial, sliding, and retrieved configs and fails the build if any task
+fails — no API key needed. A live run is manual only: Actions → eval →
+Run workflow, pick a config, and it runs against the real API using the
+`OPENAI_API_KEY` repo secret (set it in Settings → Secrets before the
+first live dispatch; it never runs on push).
 
 ## Quickstart
 
@@ -185,13 +213,14 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - [x] Honest telemetry (TTFT, call latency, effective throughput — no chunk-arrival artifacts)
 - [x] Reliability: retries with backoff, timeouts, circuit breaker, graceful degradation
 - [x] LLM-as-judge scoring with rubrics, alongside deterministic pytest grading
-- [x] More tasks: multi-file refactors, longer horizons (8 total)
+- [x] More tasks: multi-file refactors, longer horizons (9 total, incl. a distractor-file RAG demo)
 - [x] Prompt versioning: prompt v1/v2 as an A/B config dimension
 - [x] Plan-then-act vs pure ReAct: plan-then-act implemented as a config dimension (live A/B numbers to come)
 - [x] Token budgets per task (80% wrap-up warning, hard stop at the cap; `configs/budget.json`)
 - [x] Model tiering (cheap→strong escalation on tool errors or long horizons; per-call model in metrics)
 - [x] Guardrails: shell denylist + readonly permission mode, blocks counted in telemetry
-- [ ] CI: run the eval suite on every push via GitHub Actions
+- [x] RAG-style file context (keyword top-k injection; distractor task demo; `configs/retrieved.json`)
+- [x] CI: mock eval gate on push/PR, live eval manual-only via workflow_dispatch
 - [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)
 - [ ] KV-cache-friendly prompt layout experiments
 - [ ] Trajectory visualizer
