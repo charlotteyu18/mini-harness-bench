@@ -1,0 +1,1 @@
+{"cheap_model":"gpt-4o-mini","context_strategy":"full","max_iterations":12,"model":"gpt-4o","name":"tiered-full","tier_escalate_after_steps":6,"window_messages":8}

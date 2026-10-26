@@ -7,6 +7,7 @@ def summarize_trajectory(steps: list[dict]) -> dict:
     ttfts, latencies, tps, prompt_toks, comp_toks = [], [], [], 0, 0
     tool_calls = 0
     guardrail_blocks = 0
+    models_used: dict[str, int] = {}
     errors = 0
     for s in steps:
         m = s["llm_metrics"]
@@ -21,6 +22,8 @@ def summarize_trajectory(steps: list[dict]) -> dict:
             tps.append(m["throughput_tps"])
         prompt_toks += m.get("prompt_tokens", 0)
         comp_toks += m.get("completion_tokens", 0)
+        if m.get("model"):
+            models_used[m["model"]] = models_used.get(m["model"], 0) + 1
         tool_calls += len(s["tool_calls"])
         guardrail_blocks += sum(
             1 for r in s["tool_results"] if r.get("guardrail_blocked")
@@ -29,6 +32,7 @@ def summarize_trajectory(steps: list[dict]) -> dict:
         "steps": len(steps),
         "tool_calls": tool_calls,
         "guardrail_blocks": guardrail_blocks,
+        "models_used": models_used,
         "llm_errors": errors,
         "avg_ttft_ms": round(statistics.mean(ttfts), 1) if ttfts else 0,
         "avg_call_latency_s": round(statistics.mean(latencies), 2) if latencies else 0,

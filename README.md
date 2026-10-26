@@ -38,9 +38,12 @@ management — and measuring what each choice costs in latency and tokens.
   efficiency, verification discipline, recovery) — pytest says *whether* it
   worked, the judge says *how well*.
 - **Config experiments** (`configs/`): compare harness knobs head-to-head —
-  e.g. `full` history vs `sliding_window` context trimming, and pure ReAct
+  e.g. `full` history vs `sliding_window` context trimming, pure ReAct
   vs plan-then-act (`configs/plan.json`: one tool-less planning call, then
-  execution against the plan; planning failures degrade back to ReAct).
+  execution against the plan; planning failures degrade back to ReAct),
+  and cheap→strong model tiering (`configs/tiered.json`: start on the cheap
+  model, escalate on tool errors or long horizons; per-call model recorded
+  in trajectory metrics).
 
 ## Architecture
 
@@ -172,6 +175,8 @@ instead of killing the whole run; the table above is the post-fix rerun.
   tool round-trip multiplies prompt tokens.
 - **guardrail_blocks** — tool calls intercepted by guardrails (denylist or
   readonly mode) in a task.
+- **model** — the model used for each call, recorded in trajectory metrics
+  (tiered runs mix cheap and strong models).
 - **stop_reason** — how a run ended: `done` | `max_iterations` | `llm_error` |
   `budget_exceeded` | `gave_up`.
 
@@ -184,7 +189,7 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - [x] Prompt versioning: prompt v1/v2 as an A/B config dimension
 - [x] Plan-then-act vs pure ReAct: plan-then-act implemented as a config dimension (live A/B numbers to come)
 - [x] Token budgets per task (80% wrap-up warning, hard stop at the cap; `configs/budget.json`)
-- [ ] Model tiering (cheap vs strong model routing)
+- [x] Model tiering (cheap→strong escalation on tool errors or long horizons; per-call model in metrics)
 - [x] Guardrails: shell denylist + readonly permission mode, blocks counted in telemetry
 - [ ] CI: run the eval suite on every push via GitHub Actions
 - [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)

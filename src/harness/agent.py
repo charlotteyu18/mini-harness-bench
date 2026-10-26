@@ -62,6 +62,8 @@ class HarnessConfig:
     mode: str = "react"  # "react" | "plan_then_act" — the strategy A/B dimension
     token_budget: int | None = None  # per-task token cap; None = unlimited
     permissions: str = "full"  # "full" | "readonly" — guardrail mode
+    cheap_model: str | None = None  # tiering: start here, escalate to `model`
+    tier_escalate_after_steps: int = 6  # escalate when step index reaches this
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -85,6 +87,13 @@ class Agent:
                 max_retries=config.llm_max_retries,
                 retry_backoff_s=config.llm_retry_backoff_s,
             )
+        # Model tiering: one client, model switched between calls. The
+        # strong model is whatever the client resolved to (config model,
+        # MODEL env, or the default); tiering starts on the cheap model.
+        self._strong_model = self.llm.model
+        self._tier_escalated = False
+        if config.cheap_model:
+            self.llm.model = config.cheap_model
 
     def run(self, task_prompt: str, workdir: Path, traj_path: Path) -> dict:
         belt = Toolbelt(workdir, permissions=self.config.permissions)
@@ -97,6 +106,7 @@ class Agent:
         stop_reason = "max_iterations"
         spent_tokens = 0
         budget_warned = False
+        tool_error_seen = False
 
         if self.config.mode == "plan_then_act":
             plan_step = self._make_plan(task_prompt)
@@ -125,6 +135,18 @@ class Agent:
                 # by the single call that crossed the line.
                 stop_reason = "budget_exceeded"
                 break
+            if (
+                self.config.cheap_model
+                and not self._tier_escalated
+                and (
+                    i >= self.config.tier_escalate_after_steps
+                    or tool_error_seen
+                )
+            ):
+                # One-way escalation: cheap model struggled (error or
+                # long horizon) — switch to the strong model and stay.
+                self.llm.model = self._strong_model
+                self._tier_escalated = True
             try:
                 text, tool_calls, metrics = self.llm.chat(messages, TOOL_SCHEMAS)
             except LLMError as e:
@@ -183,6 +205,8 @@ class Agent:
                 entry = {"tool": tc["name"], "result": result}
                 if blocked:
                     entry["guardrail_blocked"] = True
+                if result.startswith("TOOL ERROR"):
+                    tool_error_seen = True
                 step["tool_results"].append(entry)
                 messages.append(
                     {

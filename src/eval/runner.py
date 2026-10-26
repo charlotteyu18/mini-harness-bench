@@ -83,6 +83,8 @@ def main() -> None:
         mode=cfg.get("mode", "react"),
         token_budget=cfg.get("token_budget"),
         permissions=cfg.get("permissions", "full"),
+        cheap_model=cfg.get("cheap_model"),
+        tier_escalate_after_steps=cfg.get("tier_escalate_after_steps", 6),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),
@@ -97,7 +99,7 @@ def main() -> None:
 
     print(f"config={config.name} strategy={config.context_strategy} "
           f"mode={config.mode} budget={config.token_budget} "
-          f"perms={config.permissions} "
+          f"perms={config.permissions} cheap={config.cheap_model} "
           f"prompt={config.system_prompt} tasks={len(tasks)} "
           f"judge={args.judge}")
     with out_path.open("w") as f:

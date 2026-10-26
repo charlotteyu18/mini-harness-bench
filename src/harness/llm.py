@@ -51,6 +51,7 @@ class CallMetrics:
     prompt_tokens: int = 0        # from API usage payload
     completion_tokens: int = 0    # from API usage payload
     throughput_tps: float = 0.0   # effective: completion_tokens / total seconds
+    model: str = ""               # model used for this call (tiering)
 
     def to_dict(self):
         return asdict(self)
@@ -117,6 +118,9 @@ class LLMClient:
                 break
             else:
                 self._consec_failures = 0
+                # record the model actually used: tiering switches it
+                # between calls, so the metric must come from call time.
+                metrics.model = self.model
                 return text, tool_calls, metrics
         self._consec_failures += 1
         if self._consec_failures >= self.circuit_breaker_threshold:
