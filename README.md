@@ -42,6 +42,51 @@ management — and measuring what each choice costs in latency and tokens.
   vs plan-then-act (`configs/plan.json`: one tool-less planning call, then
   execution against the plan; planning failures degrade back to ReAct).
 
+## Architecture
+
+```mermaid
+flowchart TD
+    TASK["tasks/*.json\nprompt + files + verify command"]
+    CFG["configs/*.json\ncontext · mode · prompt · budget · permissions"]
+    R["eval/runner.py\none isolated temp workdir per task"]
+    A["harness/agent.py\nReAct / plan-then-act loop"]
+    L["harness/llm.py\nstreaming client + honest telemetry\nretry · timeout · circuit breaker"]
+    M["harness/mock.py\nscripted client, no API key"]
+    API["OpenAI-compatible API"]
+    T["harness/tools.py\nread / write / shell / grep\npath jail + shell denylist"]
+    WD["task workdir\nsandboxed files"]
+    TR["trajectories/*.jsonl\none step per line"]
+    J["harness/judge.py\n0-5 rubric scoring"]
+    V["verify\npytest in the workdir"]
+    RES["results/*.jsonl\npass/fail + metrics + judge"]
+    RP["eval/report.py\nmarkdown comparison table"]
+    TE["harness/telemetry.py\naggregate steps into run metrics"]
+
+    TASK --> R
+    CFG --> R
+    R --> A
+    A --> L
+    A -. "MODEL=mock" .-> M
+    L --> API
+    A --> T
+    T --> WD
+    A --> TR
+    R --> V
+    V --> WD
+    TR --> J
+    J --> RES
+    V --> RES
+    TE --> RES
+    RES --> RP
+```
+
+One loop iteration: build messages → LLM call (records TTFT, latency,
+tokens) → append the assistant message → execute tool calls
+(guardrail-checked) → append tool results → apply the context strategy
+(`full` keeps everything, `sliding_window` trims old messages without
+splitting a tool-call group) → repeat until DONE, the token budget, or the
+iteration cap.
+
 ## Quickstart
 
 ```bash
