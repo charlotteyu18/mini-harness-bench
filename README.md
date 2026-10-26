@@ -25,6 +25,12 @@ management — and measuring what each choice costs in latency and tokens.
   (failed runs record a `stop_reason` instead of crashing the eval), and
   optional per-task token budgets (wrap-up warning at 80%, hard stop at
   the cap).
+- **Guardrails** (`src/harness/tools.py`): file tools are jailed to the task
+  workdir; shell commands matching a destructive denylist (`rm -rf`,
+  `sudo`, piping downloads into a shell, `mkfs`, raw device writes) are
+  refused before execution, and a `readonly` permission mode disables
+  writes and shell entirely. Refusals reach the agent as tool results and
+  are counted in telemetry as `guardrail_blocks`.
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
 - **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
@@ -119,6 +125,8 @@ instead of killing the whole run; the table above is the post-fix rerun.
   the harness actually experienced (not derived from per-chunk arrival times).
 - **Tokens/task** — the real cost driver for agentic workloads: every extra
   tool round-trip multiplies prompt tokens.
+- **guardrail_blocks** — tool calls intercepted by guardrails (denylist or
+  readonly mode) in a task.
 - **stop_reason** — how a run ended: `done` | `max_iterations` | `llm_error` |
   `budget_exceeded` | `gave_up`.
 
@@ -132,7 +140,7 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - [x] Plan-then-act vs pure ReAct: plan-then-act implemented as a config dimension (live A/B numbers to come)
 - [x] Token budgets per task (80% wrap-up warning, hard stop at the cap; `configs/budget.json`)
 - [ ] Model tiering (cheap vs strong model routing)
-- [ ] Guardrails: tool permission boundaries, destructive-command interception
+- [x] Guardrails: shell denylist + readonly permission mode, blocks counted in telemetry
 - [ ] CI: run the eval suite on every push via GitHub Actions
 - [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)
 - [ ] KV-cache-friendly prompt layout experiments

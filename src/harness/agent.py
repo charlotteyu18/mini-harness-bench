@@ -61,6 +61,7 @@ class HarnessConfig:
     context_strategy: str = "full"  # "full" | "sliding_window"
     mode: str = "react"  # "react" | "plan_then_act" — the strategy A/B dimension
     token_budget: int | None = None  # per-task token cap; None = unlimited
+    permissions: str = "full"  # "full" | "readonly" — guardrail mode
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -86,7 +87,7 @@ class Agent:
             )
 
     def run(self, task_prompt: str, workdir: Path, traj_path: Path) -> dict:
-        belt = Toolbelt(workdir)
+        belt = Toolbelt(workdir, permissions=self.config.permissions)
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": task_prompt},
@@ -178,10 +179,11 @@ class Agent:
                 stop_reason = "done" if done else "gave_up"
                 break
             for tc in tool_calls:
-                result = belt.execute(tc["name"], tc["arguments"])
-                step["tool_results"].append(
-                    {"tool": tc["name"], "result": result}
-                )
+                result, blocked = belt.execute(tc["name"], tc["arguments"])
+                entry = {"tool": tc["name"], "result": result}
+                if blocked:
+                    entry["guardrail_blocked"] = True
+                step["tool_results"].append(entry)
                 messages.append(
                     {
                         "role": "tool",

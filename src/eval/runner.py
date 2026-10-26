@@ -82,6 +82,7 @@ def main() -> None:
         context_strategy=cfg.get("context_strategy", "full"),
         mode=cfg.get("mode", "react"),
         token_budget=cfg.get("token_budget"),
+        permissions=cfg.get("permissions", "full"),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),
@@ -96,6 +97,7 @@ def main() -> None:
 
     print(f"config={config.name} strategy={config.context_strategy} "
           f"mode={config.mode} budget={config.token_budget} "
+          f"perms={config.permissions} "
           f"prompt={config.system_prompt} tasks={len(tasks)} "
           f"judge={args.judge}")
     with out_path.open("w") as f:
@@ -111,10 +113,13 @@ def main() -> None:
                 jstr = f" judge={avg:.1f}/5"
             elif j.get("error"):
                 jstr = f" judge=ERR({j['error'][:40]})"
+            bstr = ""
+            if r["metrics"].get("guardrail_blocks"):
+                bstr = f" blocks={r['metrics']['guardrail_blocks']}"
             print(f"[{mark}] {t['id']} "
                   f"steps={r['metrics']['steps']} "
                   f"tokens={r['metrics']['total_tokens']} "
-                  f"ttft={r['metrics']['avg_ttft_ms']}ms{jstr}")
+                  f"ttft={r['metrics']['avg_ttft_ms']}ms{jstr}{bstr}")
     print(f"results -> {out_path}")
 
 
