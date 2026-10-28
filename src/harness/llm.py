@@ -50,6 +50,7 @@ class CallMetrics:
     total_ms: float = 0.0         # full round-trip wall time (honest)
     prompt_tokens: int = 0        # from API usage payload
     completion_tokens: int = 0    # from API usage payload
+    cached_tokens: int = 0        # prompt tokens served from prefix cache
     throughput_tps: float = 0.0   # effective: completion_tokens / total seconds
     model: str = ""               # model used for this call (tiering)
 
@@ -201,6 +202,12 @@ class LLMClient:
         if usage is not None:
             m.prompt_tokens = usage.prompt_tokens or 0
             m.completion_tokens = usage.completion_tokens or 0
+            # Prefix-cache hits, when the provider reports them
+            # (OpenAI: usage.prompt_tokens_details.cached_tokens).
+            # Absent on mock usage and on providers that don't report
+            # it — getattr keeps both paths honest at 0.
+            details = getattr(usage, "prompt_tokens_details", None)
+            m.cached_tokens = getattr(details, "cached_tokens", 0) or 0
         if total_s > 0 and m.completion_tokens:
             # effective throughput: what the harness actually experienced.
             # NOT derived from per-chunk arrival times (see module docstring).

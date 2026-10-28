@@ -38,11 +38,16 @@ def retrieve_files(
     query: str,
     top_k: int = 3,
     max_chars: int = 4000,
+    order: str = "score",
 ) -> list[dict]:
-    """Return up to top_k files as {path, content}, best score first.
+    """Return up to top_k files as {path, content}.
 
-    Score = number of distinct query tokens present in the file. Ties
-    break alphabetically by path, so results are deterministic.
+    Score = number of distinct query tokens present in the file. Only
+    files with a nonzero score are candidates. `order` controls the
+    injection order: "score" ranks best first (most relevant up front);
+    "path" sorts alphabetically, so the same file set always produces
+    the same prefix bytes — the cache-friendly choice, since prefix
+    caching matches on exact token sequences.
     """
     query_tokens = _tokens(query)
     scored: list[tuple[int, str, str]] = []
@@ -61,7 +66,10 @@ def retrieve_files(
         score = len(query_tokens & _tokens(content))
         if score:
             scored.append((score, rel, content[:max_chars]))
-    scored.sort(key=lambda item: (-item[0], item[1]))
+    if order == "path":
+        scored.sort(key=lambda item: item[1])
+    else:
+        scored.sort(key=lambda item: (-item[0], item[1]))
     return [
         {"path": rel, "content": content}
         for _, rel, content in scored[:top_k]

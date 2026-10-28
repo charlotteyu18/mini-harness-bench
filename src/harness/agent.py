@@ -66,6 +66,7 @@ class HarnessConfig:
     tier_escalate_after_steps: int = 6  # escalate when step index reaches this
     retrieval_top_k: int = 3  # retrieved strategy: files injected up front
     retrieval_max_chars: int = 4000  # per-file cap on injected content
+    retrieval_order: str = "score"  # "score" | "path" — path order is cache-friendly
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -118,6 +119,7 @@ class Agent:
                 task_prompt,
                 top_k=self.config.retrieval_top_k,
                 max_chars=self.config.retrieval_max_chars,
+                order=self.config.retrieval_order,
             )
             retrieved_files = [r["path"] for r in retrieved]
             if retrieved:
@@ -311,6 +313,17 @@ class Agent:
         # context by injecting relevant files up front, not by trimming.
         if self.config.context_strategy != "sliding_window":
             return
+        # Drop any previous trim notice first: it lives at the end now
+        # (see below), outside the trimmed range, so without this it
+        # would accumulate one copy per trim.
+        messages[:] = [
+            m
+            for m in messages
+            if not (
+                m["role"] == "system"
+                and m["content"].startswith("[harness: trimmed")
+            )
+        ]
         # keep system + original task prompt + the most recent window
         if len(messages) <= 2 + self.config.window_messages:
             return
@@ -324,8 +337,11 @@ class Agent:
             cut += 1
         dropped = cut - 2
         del messages[2:cut]
-        messages.insert(
-            2,
+        # Append the notice at the END, not after the task prompt: a
+        # varying notice early in the list would poison prefix-cache
+        # matching for everything after it (its count changes every
+        # trim); at the end it only costs itself.
+        messages.append(
             {
                 "role": "system",
                 "content": f"[harness: trimmed {dropped} older messages "

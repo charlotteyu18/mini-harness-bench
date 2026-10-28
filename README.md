@@ -42,6 +42,17 @@ management — and measuring what each choice costs in latency and tokens.
   calls for upfront prompt tokens, so the win is fewer tool round-trips
   and less wandering through irrelevant files, not necessarily fewer
   total tokens.
+- **KV-cache-friendly prompt layout**: prefix caching matches on exact
+  token sequences, so variable content early in the message list poisons
+  the cache for everything after it. Two concrete moves: retrieved files
+  can be injected in `path` order (`retrieval_order: "path"`) instead of
+  score order, so the same file set always yields the same prefix bytes;
+  and the sliding-window trim notice is appended at the end of the
+  message list instead of after the task prompt, so it only costs itself.
+  Per-call cached tokens are read from the API usage payload
+  (`prompt_tokens_details.cached_tokens`) into telemetry as
+  `cached_tokens` / `cache_hit_rate` — mock runs report 0, honestly, since
+  no real cache exists there; the layout comparison is a live experiment.
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
 - **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
@@ -54,11 +65,14 @@ management — and measuring what each choice costs in latency and tokens.
   execution against the plan; planning failures degrade back to ReAct),
   cheap→strong model tiering (`configs/tiered.json`: start on the cheap
   model, escalate on tool errors or long horizons; per-call model recorded
-  in trajectory metrics), and retrieved file context (`configs/retrieved.json`:
+  in trajectory metrics), retrieved file context (`configs/retrieved.json`:
   top-2 files injected up front; the suite's 9th task,
   `checkout-with-distractors`, hides the two relevant modules among eight
   irrelevant ones to show it off — mock: 4 steps / 4 tool calls full vs
-  3 steps / 2 tool calls retrieved; live numbers to come).
+  3 steps / 2 tool calls retrieved; live numbers to come), and
+  cache-friendly retrieval order (`configs/retrieved-path.json`: same
+  retrieved strategy, files injected in path order so the prefix bytes
+  are stable across runs).
 
 ## Architecture
 
@@ -186,12 +200,82 @@ the judge scores sit next to the test results. With n=8 and this much
 run-to-run variance, treat every delta here as directional, not proven;
 repeats and a bigger suite are needed before claiming a real tradeoff.
 
+Note: the suite has since grown to 9 tasks (the RAG distractor demo), so
+re-running the commands above today covers 9 tasks; the table above is
+the 8-task runs as they happened.
+
 This eval also caught a real harness bug: the first sliding-window run
 crashed mid-suite with an OpenAI 400 — trimming was slicing an
 assistant(tool_calls) → tool(result) group in half and orphaning the tool
 messages. Fixed (trimming now never splits a tool group) and the API-error
 path hardened so a non-retryable error degrades to a per-task `llm_error`
 instead of killing the whole run; the table above is the post-fix rerun.
+
+## Comparing configurations
+
+Context strategies — the axis this project studies most:
+
+| strategy | how it works | effect | best when | evidence |
+|---|---|---|---|---|
+| `full` (`configs/serial.json`) | keeps every message | baseline; prompt tokens grow with steps | short tasks, few files | live: 7/8, 4090 tok/task |
+| `sliding_window` (`configs/sliding.json`) | keeps system + prompt + last 8 messages, never splits a tool-call group | fewer tokens/task in both live runs | long horizons | live: 8/8 twice, 3150 / 3765 tok/task |
+| `retrieved` (`configs/retrieved.json`) | top-k files injected up front, then full history | fewer tool round-trips, not necessarily fewer total tokens | many-file workdirs | mock: 4→3 steps, 4→2 calls; live TBD |
+
+Other knobs:
+
+| knob | what it does | cost effect | evidence |
+|---|---|---|---|
+| plan-then-act (`configs/plan.json`) | one tool-less planning call, then execution against the plan | +1 call up front; may reduce wandering | mock 9/9; live A/B TBD |
+| token budget (`configs/budget.json`) | wrap-up nudge at 80%, hard stop at the cap | bounds blowups (`count-errors` hit 14.8k uncapped) | mock-verified at cap 500 |
+| model tiering (`configs/tiered.json`) | cheap model first, escalate on tool error or step 6 | fewer strong-model calls | mock-verified; live savings TBD |
+| cache-friendly layout (`configs/retrieved-path.json`) | retrieved files in path order; trim notice at end of message list | stable prefix → higher cache-hit potential, measured via `cached_tokens` | mock-verified order; live cache numbers TBD |
+| guardrails (`configs/readonly.json`) | shell denylist + readonly mode, blocks counted in telemetry | no model cost; tasks fail closed | mock: blocks counted, 0/9 in readonly |
+
+## Context management: what I learned
+
+Context is the agent's working memory, and every context choice trades
+relevance against size against staleness. Three lessons from building
+this harness:
+
+**Trimming and retrieval are different axes, not substitutes.**
+Sliding-window bounds how fast context *grows*; retrieval seeds what
+context *starts with*. A long task in a big repo wants both — today
+`retrieved` composes with full history only, so retrieved + sliding is
+open future work, not a claimed combination.
+
+**Messages are not independent lines; tool groups are atomic.** An
+assistant message with `tool_calls` and its tool-result messages form one
+unit. Trimming that splits the unit produces a conversation the API
+rejects outright — this was a real crash in the first sliding run, not a
+theoretical edge. Any trimming rule must respect the group boundary,
+and the eval suite is what catches violations.
+
+**Retrieval quality is about ranking, not recall.** Keyword overlap
+works when files share vocabulary with the task (the distractor demo:
+the two relevant modules rank top-2 out of ten). It fails when
+relevance is semantic — a helper with an unrelated name, or a concept
+the task describes but never names. Keyword retrieval is an honest
+baseline; embeddings are the next step, not a skipped one.
+
+**Prefix caching is a third axis.** Trimming bounds growth and retrieval
+seeds relevance; prefix caching rewards *stability* — the same bytes in
+the same order. That puts it in tension with both: sliding-window deletes
+prefix tokens by design, and score-ordered retrieval reorders the prefix
+per task. The two layout moves in this repo (path-ordered injection, trim
+notice at the end) exist to reduce that tension, and `cached_tokens` in
+telemetry exists to measure whether they actually help — a layout claim
+without a cache-hit number is just a story.
+
+**Measure with repeats, or don't claim a tradeoff.** The same
+sliding-window config moved from 3150 to 3765 tokens/task across two
+live runs, and one task swung from judge 4.5 to 1.0 while still passing
+pytest. Context decisions change behavior stochastically, so this repo
+reports pass/fail next to judge scores and treats every single-run
+delta as directional.
+
+A rough decision guide: few files and a short horizon → `full`; long
+horizon → `sliding_window`; many files → `retrieved`; untrusted
+commands → `readonly` plus a token budget.
 
 ## Metrics glossary
 
@@ -205,6 +289,9 @@ instead of killing the whole run; the table above is the post-fix rerun.
   readonly mode) in a task.
 - **model** — the model used for each call, recorded in trajectory metrics
   (tiered runs mix cheap and strong models).
+- **cached_tokens / cache_hit_rate** — prompt tokens served from the
+  provider's prefix cache, and their share of prompt tokens (0 on mock
+  runs, which have no real cache).
 - **stop_reason** — how a run ended: `done` | `max_iterations` | `llm_error` |
   `budget_exceeded` | `gave_up`.
 
@@ -221,6 +308,8 @@ instead of killing the whole run; the table above is the post-fix rerun.
 - [x] Guardrails: shell denylist + readonly permission mode, blocks counted in telemetry
 - [x] RAG-style file context (keyword top-k injection; distractor task demo; `configs/retrieved.json`)
 - [x] CI: mock eval gate on push/PR, live eval manual-only via workflow_dispatch
+- [x] Comparison tables: context strategies and other knobs, with evidence status per row
+- [x] Context-management writeup: trimming vs retrieval, the tool-group invariant, ranking limits, measurement caveats
+- [x] KV-cache-friendly prompt layout: path-ordered retrieval injection, trim notice at end, cached_tokens telemetry
 - [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)
-- [ ] KV-cache-friendly prompt layout experiments
 - [ ] Trajectory visualizer

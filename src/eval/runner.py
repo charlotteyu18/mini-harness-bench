@@ -88,6 +88,7 @@ def main() -> None:
         tier_escalate_after_steps=cfg.get("tier_escalate_after_steps", 6),
         retrieval_top_k=cfg.get("retrieval_top_k", 3),
         retrieval_max_chars=cfg.get("retrieval_max_chars", 4000),
+        retrieval_order=cfg.get("retrieval_order", "score"),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),
