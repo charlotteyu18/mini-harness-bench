@@ -55,6 +55,22 @@ management — and measuring what each choice costs in latency and tokens.
   no real cache exists there; the layout comparison is a live experiment.
 - **Eval runner** (`src/eval/runner.py`): runs each task in an isolated temp
   dir, grades with the task's `verify` command, records pass/fail + metrics.
+- **Parallel tool calls** (`src/harness/agent.py`): with
+  `parallel_tools: true`, a turn's independent calls run concurrently via
+  a thread pool. Safety rule: reads and writes to distinct files may run
+  together; shell commands never parallelize, and a write to a file another
+  call in the same turn reads falls back to sequential. Results are
+  collected in call order, so trajectories stay deterministic. Per-step
+  tool wall time is recorded as `tool_ms`. Honest measurement: tokens are
+  identical either way (same calls, same results); the latency win scales
+  with tool latency — a synthetic 0.3s/call tool went 0.90s → 0.31s for
+  three calls, while this suite's local reads are sub-millisecond and its
+  pytest runs are sequential by design, so parallel vs serial totals here
+  sit inside run-to-run noise.
+- **Trajectory visualizer** (`src/eval/visualize.py`): renders a
+  trajectory JSONL as a self-contained HTML page (no JS, no external
+  assets) — run summary plus every step's assistant text, tool calls,
+  and results in collapsible sections.
 - **LLM-as-judge** (`src/harness/judge.py`): with `--judge`, each finished
   trajectory is also scored 0–5 on a rubric (solution correctness, tool
   efficiency, verification discipline, recovery) — pytest says *whether* it
@@ -89,6 +105,7 @@ flowchart TD
     WD["task workdir\nsandboxed files"]
     RET["harness/retrieval.py\nkeyword top-k over workdir files"]
     TR["trajectories/*.jsonl\none step per line"]
+    VIZ["eval/visualize.py\ntrajectory JSONL → HTML"]
     J["harness/judge.py\n0-5 rubric scoring"]
     V["verify\npytest in the workdir"]
     RES["results/*.jsonl\npass/fail + metrics + judge"]
@@ -106,6 +123,7 @@ flowchart TD
     WD --> RET
     RET --> A
     A --> TR
+    TR --> VIZ
     R --> V
     V --> WD
     TR --> J
@@ -131,6 +149,20 @@ fails — no API key needed. A live run is manual only: Actions → eval →
 Run workflow, pick a config, and it runs against the real API using the
 `OPENAI_API_KEY` repo secret (set it in Settings → Secrets before the
 first live dispatch; it never runs on push).
+
+## Trajectory visualizer
+
+```bash
+# after any runner invocation (trajectories land in trajectories/<config-name>/)
+python -m src.eval.visualize --trajectory trajectories/serial-full-context/count-errors.jsonl
+# writes trajectories/serial-full-context/count-errors.html next to it
+```
+
+Open the HTML straight from disk: summary table (steps, tokens, TTFT,
+`tool_ms`, guardrail blocks, models used) plus every step's assistant
+text, tool calls with arguments, and results in collapsible sections.
+Long outputs are truncated, and all content is HTML-escaped, so a
+trajectory containing markup renders as text, not as markup.
 
 ## Quickstart
 
@@ -229,6 +261,7 @@ Other knobs:
 | token budget (`configs/budget.json`) | wrap-up nudge at 80%, hard stop at the cap | bounds blowups (`count-errors` hit 14.8k uncapped) | mock-verified at cap 500 |
 | model tiering (`configs/tiered.json`) | cheap model first, escalate on tool error or step 6 | fewer strong-model calls | mock-verified; live savings TBD |
 | cache-friendly layout (`configs/retrieved-path.json`) | retrieved files in path order; trim notice at end of message list | stable prefix → higher cache-hit potential, measured via `cached_tokens` | mock-verified order; live cache numbers TBD |
+| parallel tools (`configs/parallel.json`) | independent calls in a turn run concurrently (reads + distinct writes; shell never) | latency win scales with tool latency; tokens unchanged | slow-tool test 0.90s → 0.31s; suite totals inside run noise |
 | guardrails (`configs/readonly.json`) | shell denylist + readonly mode, blocks counted in telemetry | no model cost; tasks fail closed | mock: blocks counted, 0/9 in readonly |
 
 ## Context management: what I learned
@@ -311,5 +344,5 @@ commands → `readonly` plus a token budget.
 - [x] Comparison tables: context strategies and other knobs, with evidence status per row
 - [x] Context-management writeup: trimming vs retrieval, the tool-group invariant, ranking limits, measurement caveats
 - [x] KV-cache-friendly prompt layout: path-ordered retrieval injection, trim notice at end, cached_tokens telemetry
-- [ ] Parallel subagent config (fan-out independent tool calls, measure latency win vs token cost)
-- [ ] Trajectory visualizer
+- [x] Parallel tool calls: safe-rule concurrency with order-preserving results, tool_ms telemetry
+- [x] Trajectory visualizer: trajectory JSONL → self-contained HTML

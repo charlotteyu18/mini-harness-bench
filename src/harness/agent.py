@@ -13,6 +13,7 @@ Three harness knobs are exposed for experiments:
 """
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +68,7 @@ class HarnessConfig:
     retrieval_top_k: int = 3  # retrieved strategy: files injected up front
     retrieval_max_chars: int = 4000  # per-file cap on injected content
     retrieval_order: str = "score"  # "score" | "path" — path order is cache-friendly
+    parallel_tools: bool = False  # run independent calls in a turn concurrently
     model: str | None = None
     window_messages: int = 8  # kept messages for sliding_window
     system_prompt: str = "v1"  # "v1" | "v2" — the prompt A/B dimension
@@ -74,6 +76,33 @@ class HarnessConfig:
     llm_timeout_s: float = 120.0
     llm_max_retries: int = 3
     llm_retry_backoff_s: float = 1.0
+
+
+def _parallel_safe(tool_calls: list[dict]) -> bool:
+    """True when a turn's calls may run concurrently without changing
+    the outcome. Reads (read_file, grep) are pure. Writes are safe only
+    when they target distinct files that no call in the same turn reads.
+    Shell commands are never parallelized: they can interact through
+    the filesystem in ways the harness cannot see.
+    """
+    if len(tool_calls) < 2:
+        return False
+    writes: set[str] = set()
+    reads: set[str] = set()
+    for tc in tool_calls:
+        name, args = tc["name"], tc["arguments"]
+        if name == "run_shell":
+            return False
+        if name == "write_file":
+            path = args.get("path", "")
+            if path in writes:
+                return False
+            writes.add(path)
+        elif name == "read_file":
+            reads.add(args.get("path", ""))
+        elif name != "grep":
+            return False  # unknown tool: stay sequential
+    return not (writes & reads)
 
 
 class Agent:
@@ -229,8 +258,27 @@ class Agent:
                 steps.append(step)
                 stop_reason = "done" if done else "gave_up"
                 break
-            for tc in tool_calls:
-                result, blocked = belt.execute(tc["name"], tc["arguments"])
+            tool_start = time.monotonic()
+            if self.config.parallel_tools and _parallel_safe(tool_calls):
+                # Independent calls run concurrently; executor.map
+                # preserves input order, so the trajectory stays
+                # deterministic and tool results still line up with
+                # their declaring calls.
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=len(tool_calls)) as ex:
+                    results = list(
+                        ex.map(
+                            lambda tc: belt.execute(tc["name"], tc["arguments"]),
+                            tool_calls,
+                        )
+                    )
+            else:
+                results = [
+                    belt.execute(tc["name"], tc["arguments"]) for tc in tool_calls
+                ]
+            step["tool_ms"] = round((time.monotonic() - tool_start) * 1000, 1)
+            for tc, (result, blocked) in zip(tool_calls, results):
                 entry = {"tool": tc["name"], "result": result}
                 if blocked:
                     entry["guardrail_blocked"] = True

@@ -6,6 +6,7 @@ import statistics
 def summarize_trajectory(steps: list[dict]) -> dict:
     ttfts, latencies, tps, prompt_toks, comp_toks = [], [], [], 0, 0
     cached_toks = 0
+    tool_ms = 0.0
     tool_calls = 0
     guardrail_blocks = 0
     models_used: dict[str, int] = {}
@@ -27,6 +28,7 @@ def summarize_trajectory(steps: list[dict]) -> dict:
         if m.get("model"):
             models_used[m["model"]] = models_used.get(m["model"], 0) + 1
         tool_calls += len(s["tool_calls"])
+        tool_ms += s.get("tool_ms", 0)
         guardrail_blocks += sum(
             1 for r in s["tool_results"] if r.get("guardrail_blocked")
         )
@@ -44,6 +46,7 @@ def summarize_trajectory(steps: list[dict]) -> dict:
         "total_tokens": prompt_toks + comp_toks,
         "cached_tokens": cached_toks,
         "cache_hit_rate": round(cached_toks / prompt_toks, 3) if prompt_toks else 0,
+        "tool_ms": round(tool_ms, 1),
     }
 
 

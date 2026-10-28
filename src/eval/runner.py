@@ -89,6 +89,7 @@ def main() -> None:
         retrieval_top_k=cfg.get("retrieval_top_k", 3),
         retrieval_max_chars=cfg.get("retrieval_max_chars", 4000),
         retrieval_order=cfg.get("retrieval_order", "score"),
+        parallel_tools=cfg.get("parallel_tools", False),
         # config file wins; MODEL env var (e.g. MODEL=mock) is the override
         model=cfg.get("model") or os.getenv("MODEL"),
         window_messages=cfg.get("window_messages", 8),
